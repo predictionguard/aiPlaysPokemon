@@ -2,7 +2,7 @@
 
 <img src="./header.png" alt="Example of Player AI battling a Pidgy" style="display: block; margin: 0 auto; width:100%; height:auto;">
 
-Forked from https://github.com/zeetwii/aiPlaysPokemon and adapted for Prediction Guard
+**Forked from https://github.com/zeetwii/aiPlaysPokemon and adapted for Prediction Guard**
 
 2026 has become the year of AI agents, with people publishing guides for controlling everything from sprinkler systems to crypto wallets with agentic models.  However, these guides tend to gloss over why and how you should build your tooling and harnesses, and instead recommend making everything an MCP server and to just throw data at increasingly more expensive models until you find one that works.  This solution works, but leads to two bad habits: everyone uses expensive cloud models to solve everything, and everyone removes all their privacy by exposing all of their personal data directly to these remote models.  It’s also not sustainable; no one wants to pay money every time they look at a light switch or read an email.  
 
