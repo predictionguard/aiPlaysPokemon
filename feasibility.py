@@ -31,8 +31,7 @@ import threading
 import time
 from pathlib import Path
 
-import ollama
-
+from llm_client import ChatClient, LLMError
 from operator_inbox import OperatorInbox, OperatorRequest, Verdict
 
 HERE = Path(__file__).resolve().parent
@@ -115,12 +114,12 @@ yet, or something unrelated to playing Pokemon at all.
 
 
 class Referee:
-    """One ollama call per request, judging it against the current game report."""
+    """One model call per request, judging it against the current game report."""
 
-    def __init__(self, model: str, ollamaHost: str | None = None,
-                temperature: float = 0.7, numPredict: int = 150):
+    def __init__(self, model: str, llmUrl: str | None = None,
+                apiKey: str | None = None, temperature: float = 0.7, numPredict: int = 150):
         self.model = model
-        self.client = ollama.Client(host=ollamaHost) if ollamaHost else ollama
+        self.client = ChatClient(url=llmUrl, apiKey=apiKey)
         self.temperature = temperature
         self.numPredict = numPredict
 
@@ -129,21 +128,21 @@ class Referee:
                f'REQUEST: "{requestText}"\n\n'
                "Is this doable? Answer with VERDICT/REASON/REACTION only.")
         try:
-            message = self.client.chat(
+            reply = self.client.chat(
                 model=self.model,
                 messages=[{"role": "system", "content": REFEREE_SYSTEM_PROMPT},
                          {"role": "user", "content": user}],
-                options={"temperature": self.temperature,
-                        "num_predict": self.numPredict},
-            )["message"]
-        except ollama.ResponseError as exc:
+                temperature=self.temperature,
+                maxTokens=self.numPredict,
+            )
+        except LLMError as exc:
             # A broken referee shouldn't block play. Default to letting the
             # request through rather than have it silently vanish - the
             # reason says why, so it's visible that this was a fallback.
             return Verdict(accepted=True,
                           reason=f"(feasibility check failed, letting it "
                                  f"through: {exc})")
-        return _parseVerdict((message.get("content") or "").strip())
+        return _parseVerdict(reply.strip())
 
 
 VERDICT_RE = re.compile(r"verdict\s*[:\-]\s*(accept|reject)", re.IGNORECASE)

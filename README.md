@@ -9,7 +9,7 @@ We in the AI Village would like to provide a better example in this space, showi
 ### Installation
 
 To properly run this project, you will need a couple additional software packages to be downloaded first:
-- [Ollama](https://ollama.com/): This is what we use to download and manage the models locally on the laptop/desktop/Raspberry Pi/etc
+- A [Prediction Guard](https://predictionguard.com/) API key: the model (Gemma 4 12B) is served from the Prediction Guard API
 - [mGBA](https://mgba.io/downloads.html): This is the Game Boy Advance emulator we use to run the Pokemon ROM
 - A copy of a Pokemon Fire Red or Leaf Green ROM.  For my demos, I have been using Pokemon - Leaf Green Version (U) (V1.1)
 
@@ -23,14 +23,15 @@ pip install -r requirements.txt
 
 To run the project, you need to do several things:
 
-- First make sure Ollama is running on the local machine
+- Make sure the Prediction Guard API is running (defaults to `http://localhost:8080`; use `--llm-url` to point elsewhere)
 - Start mGBA, and load the Pokemon Fire Red or Leaf Green ROM
 - Within mGBA, click the `Tools` menu and then the `Scripting...` menu
   - Within the `Scripting` pop up window, click `File` and `Load Script...`
     - Within the file dialog window, navigate to the [mgba_server.lua](./mGBA/mgba_server.lua) lua script and select it.  It is located in the mGBA folder
     - Click `Run`, You should now see some text in the window saying the lua server is loaded.  
-- Within a terminal window, run `python player_ai.py`
+- Within a terminal window, run `python player_ai.py --api-key <your key>`
   - The AI should now be trying to play the game
+  - Use `--model <id>` to pick a different Prediction Guard model
 
 
 

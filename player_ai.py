@@ -77,7 +77,7 @@ for _p in (HERE / "mGBA", HERE / "battle", HERE / "locationTracking"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-import ollama  # noqa: E402
+from llm_client import ChatClient, LLMError  # noqa: E402
 
 from mgba_client import BUTTONS, MGBAClient, MGBAError  # noqa: E402
 from navigator import Navigator  # noqa: E402
@@ -185,8 +185,9 @@ EXIT_CATEGORY = "exit"
 class Config:
     """Everything tunable in one place (the old TODO's yaml file, in Python)."""
 
-    model: str = "gemma4:12b"
-    ollamaHost: str | None = None       # None = ollama's own default
+    model: str = "gemma-4-12b-it"
+    llmUrl: str | None = None           # None = llm_client.DEFAULT_URL (localhost)
+    apiKey: str | None = None
     mgbaHost: str = "127.0.0.1"
     mgbaPort: int = 54321
 
@@ -195,12 +196,11 @@ class Config:
 
     temperature: float = 0.6
     numPredict: int = 200
-    keepAlive: str = "30m"              # keep the model resident between turns
-    # Gemma 4 is a thinking model, and left to itself it spends the whole token
-    # budget reasoning and returns an empty message - the answer never arrives.
-    # Thinking off is both the reliable setting and the honest one for a local
-    # model on a laptop: a turn should cost seconds, not a minute of monologue.
-    think: bool = False
+    # Gemma 4 only thinks when the request carries a `reasoning_effort`; off
+    # means none is sent. Thinking spends tokens before the answer starts, so
+    # when it is on numPredict is raised to leave room for both (buildConfig).
+    think: bool = True
+    reasoningEffort: str = "medium"
 
     historyLength: int = 6              # recent action/result pairs in the prompt
     # A battle and the walk that led into it are two different stories, and the
@@ -2161,7 +2161,7 @@ class Observation:
 
 
 # --------------------------------------------------------------------------
-# Brain: the ollama side, and the parser that makes text into a command
+# Brain: the model side, and the parser that makes text into a command
 # --------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """You are playing Pokemon Leaf Green on a Game Boy Advance.
@@ -2301,11 +2301,8 @@ class Brain:
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.client = ollama.Client(host=cfg.ollamaHost) if cfg.ollamaHost else ollama
+        self.client = ChatClient(url=cfg.llmUrl, apiKey=cfg.apiKey)
         self.lastReply = ""
-        # Cleared the first time the server rejects `think` - not every model
-        # accepts the parameter, and the harness is meant to be model-agnostic.
-        self._supportsThink = True
 
     def preload(self):
         """Pay the model's load time once, at startup, not on turn one."""
@@ -2359,32 +2356,15 @@ class Brain:
         return None, [], self.lastReply
 
     def _chat(self, messages: list) -> str:
-        kwargs = dict(
+        # When a thinking model runs out of budget mid-thought, the client
+        # hands back the reasoning instead - the command is usually in there.
+        return self.client.chat(
             model=self.cfg.model,
             messages=messages,
-            keep_alive=self.cfg.keepAlive,
-            options={"temperature": self.cfg.temperature,
-                     "num_predict": self.cfg.numPredict},
+            temperature=self.cfg.temperature,
+            maxTokens=self.cfg.numPredict,
+            reasoningEffort=self.cfg.reasoningEffort if self.cfg.think else None,
         )
-        if self._supportsThink:
-            kwargs["think"] = self.cfg.think
-
-        try:
-            message = self.client.chat(**kwargs)["message"]
-        except (ollama.ResponseError, TypeError) as exc:
-            if not self._supportsThink or "think" not in str(exc).lower():
-                raise
-            print("  (this model doesn't take a `think` setting; continuing "
-                  "without it)")
-            self._supportsThink = False
-            kwargs.pop("think")
-            message = self.client.chat(**kwargs)["message"]
-
-        content = (message.get("content") or "").strip()
-        # A thinking model that runs out of budget mid-thought answers with an
-        # empty content field. The command is usually sitting in the reasoning
-        # anyway, so read that rather than throw the turn away.
-        return content or (message.get("thinking") or "")
 
 
 # --------------------------------------------------------------------------
@@ -3386,8 +3366,8 @@ class PlayerAI:
                 except ConnectionError as exc:
                     print(f"Lost the emulator: {exc}")
                     break
-                except ollama.ResponseError as exc:
-                    print(f"Ollama refused the request: {exc}")
+                except LLMError as exc:
+                    print(f"The model request failed: {exc}")
                     break
                 time.sleep(self.cfg.turnDelay)
         except KeyboardInterrupt:
@@ -3525,7 +3505,8 @@ def runGui(player: PlayerAI, maxTurns: int | None):
                                   daemon=True)
     playThread.start()
 
-    referee = Referee(player.cfg.model, ollamaHost=player.cfg.ollamaHost)
+    referee = Referee(player.cfg.model, llmUrl=player.cfg.llmUrl,
+                      apiKey=player.cfg.apiKey)
     worker = FeasibilityWorker(inbox, referee,
                                getSituationReport=lambda: player.lastReport)
     worker.start()
@@ -3542,7 +3523,7 @@ def runGui(player: PlayerAI, maxTurns: int | None):
 
 
 def buildConfig(args) -> Config:
-    cfg = Config(model=args.model, ollamaHost=args.ollama_host,
+    cfg = Config(model=args.model, llmUrl=args.llm_url, apiKey=args.api_key,
                  mgbaHost=args.host, mgbaPort=args.port,
                  goal=args.goal or "", logPath=args.log)
     cfg.sendImage = not args.no_image
@@ -3552,8 +3533,8 @@ def buildConfig(args) -> Config:
     cfg.objectivesPath = Path(args.objectives).resolve()
     cfg.memoriesPath = Path(args.memories).resolve()
     cfg.useObjectives = not args.no_objectives
-    cfg.think = args.think
-    if args.think:
+    cfg.think = not args.no_think
+    if cfg.think:
         cfg.numPredict = max(cfg.numPredict, 1024)   # room to think AND answer
     if args.screenshot:
         cfg.screenshotPath = Path(args.screenshot).resolve()
@@ -3565,8 +3546,11 @@ def main():
     parser.add_argument("mode", nargs="?", default="play",
                         choices=("play", "once", "manual", "dry-run", "gui"))
     parser.add_argument("--model", default=Config.model)
-    parser.add_argument("--ollama-host", default=None,
-                        help="e.g. http://192.168.1.20:11434")
+    parser.add_argument("--llm-url", default=None,
+                        help="Prediction Guard API base URL "
+                             "(default: http://localhost:8080)")
+    parser.add_argument("--api-key", default=None,
+                        help="Prediction Guard API key")
     parser.add_argument("--host", default=Config.mgbaHost)
     parser.add_argument("--port", type=int, default=Config.mgbaPort)
     parser.add_argument("--goal", default=None,
@@ -3578,9 +3562,9 @@ def main():
                         help="seconds between turns")
     parser.add_argument("--screenshot", default=None,
                         help="where to write the frame the model sees")
-    parser.add_argument("--think", action="store_true",
-                        help="let a thinking model reason before answering "
-                             "(slower, and it may never reach the ACTION line)")
+    parser.add_argument("--no-think", action="store_true",
+                        help="answer without reasoning first (faster, and "
+                             "less careful)")
     parser.add_argument("--no-image", action="store_true",
                         help="text-only prompts (for models without vision)")
     parser.add_argument("--no-places", action="store_true",
